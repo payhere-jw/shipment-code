@@ -210,6 +210,20 @@ h1 { font-size: 22px; font-weight: 700; color: #1a365d; margin-bottom: 4px; }
 
 <script>
 // =====================================================
+// SheetJS 동적 로드 (엑셀 다운로드용)
+// =====================================================
+(function loadXLSX() {
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  s.onerror = function() {
+    var s2 = document.createElement('script');
+    s2.src = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
+    document.head.appendChild(s2);
+  };
+  document.head.appendChild(s);
+})();
+
+// =====================================================
 // PDF.js 동적 로드
 // =====================================================
 (function loadPDFJS() {

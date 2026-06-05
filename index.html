@@ -130,22 +130,14 @@ h1 { font-size: 22px; font-weight: 700; color: #1a365d; margin-bottom: 4px; }
         </select>
       </div>
     </div>
-    <!-- 2행: 구분 옵션 2개 + 비고 -->
-    <div style="display:grid;grid-template-columns:180px 180px 1fr;gap:12px;align-items:end;">
+    <!-- 2행: 단말기 유형 + 비고 -->
+    <div style="display:grid;grid-template-columns:180px 400px;gap:12px;align-items:end;">
       <div class="fg">
         <label>단말기 유형 <span style="color:#718096;font-size:10px;font-weight:400;">NICE / KOCES</span></label>
         <select id="terminalType" onchange="rematchImportData()">
           <option value="">-- 해당 없음 --</option>
           <option value="NICE">NICE</option>
           <option value="KOCES">KOCES</option>
-        </select>
-      </div>
-      <div class="fg">
-        <label>거치대 색상 <span style="color:#718096;font-size:10px;font-weight:400;">화이트 / 블랙</span></label>
-        <select id="mountColor" onchange="rematchImportData()">
-          <option value="">-- 해당 없음 --</option>
-          <option value="블랙">블랙 (기본)</option>
-          <option value="화이트">화이트</option>
         </select>
       </div>
       <div class="fg">
@@ -169,7 +161,7 @@ h1 { font-size: 22px; font-weight: 700; color: #1a365d; margin-bottom: 4px; }
         <div class="u-icon">📂</div>
         <div class="u-title">견적서 PDF 파일 클릭해서 업로드</div>
       </label>
-      <input type="file" id="fileInput" accept=".xlsx,.xls,.pdf" onchange="onFileChange(this)">
+      <input type="file" id="fileInput" accept=".pdf" onchange="onFileChange(this)">
       <div class="upload-status" id="uploadStatus"></div>
     </div>
 
@@ -218,20 +210,6 @@ h1 { font-size: 22px; font-weight: 700; color: #1a365d; margin-bottom: 4px; }
 
 <script>
 // =====================================================
-// SheetJS 동적 로드 (CDN fallback 포함)
-// =====================================================
-(function loadXLSX() {
-  var s = document.createElement('script');
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-  s.onerror = function() {
-    var s2 = document.createElement('script');
-    s2.src = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
-    document.head.appendChild(s2);
-  };
-  document.head.appendChild(s);
-})();
-
-// =====================================================
 // PDF.js 동적 로드
 // =====================================================
 (function loadPDFJS() {
@@ -269,7 +247,6 @@ const OUT_OF_STOCK = [];
 
 let products = [];
 let importData = [];
-let directRows = null;
 
 // =====================================================
 // 초기화
@@ -331,30 +308,7 @@ function readFile(file) {
   var st = document.getElementById('uploadStatus');
   st.style.display = 'block';
   st.textContent = '📖 파일 읽는 중... ' + file.name;
-
-  // PDF 분기
-  if (file.name.toLowerCase().endsWith('.pdf')) {
-    readPDF(file);
-    return;
-  }
-
-  if (typeof XLSX === 'undefined') {
-    setTimeout(function() { readFile(file); }, 800);
-    return;
-  }
-
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    try {
-      var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', raw: false, cellDates: false });
-      st.textContent = '✅ 파일 로드 완료: ' + file.name + ' (' + wb.SheetNames.join(', ') + ')';
-      detectAndProcess(wb);
-    } catch(err) {
-      st.textContent = '❌ 오류: ' + err.message;
-    }
-  };
-  reader.onerror = function() { st.textContent = '❌ 파일을 읽을 수 없습니다.'; };
-  reader.readAsArrayBuffer(file);
+  readPDF(file);
 }
 
 // =====================================================
@@ -494,10 +448,28 @@ function parsePDFQuotation(allItems, pageWidths) {
   var section = null;
   var result  = [];
 
-  // 왼쪽 패널 아이템만 반환: 실제 페이지 너비의 50%를 기준 (260423 동작 복구)
+  // 페이지별 열 경계 동적 감지: x좌표 분포에서 가장 큰 gap을 찾아 좌/우 분리 기준으로 사용
+  // 2-up 레이아웃에서 고객용 견적서(좌)와 내부 가격 검증 시트(우)가 명확히 분리됨
+  var colBoundaryCache = {};
+  function getColBoundary(pageNum) {
+    if (colBoundaryCache[pageNum] !== undefined) return colBoundaryCache[pageNum];
+    var pw = pageWidths[pageNum] || 595;
+    var pageItems = allItems.filter(function(i) { return i.page === pageNum; });
+    var xs = pageItems.map(function(i) { return i.x; }).sort(function(a, b) { return a - b; });
+    var lo = pw * 0.25, hi = pw * 0.75;
+    var maxGap = 0, boundary = pw * 0.50;
+    for (var i = 1; i < xs.length; i++) {
+      var gap = xs[i] - xs[i - 1];
+      var mid = (xs[i] + xs[i - 1]) / 2;
+      if (mid >= lo && mid <= hi && gap > maxGap) { maxGap = gap; boundary = mid; }
+    }
+    // gap이 8pt 미만이면 신뢰할 수 없으므로 기본 50% 사용
+    colBoundaryCache[pageNum] = (maxGap >= 8) ? boundary : pw * 0.50;
+    return colBoundaryCache[pageNum];
+  }
+
   function getLeftItems(row){
-    var pw = pageWidths[row.page] || 595;
-    var boundary = pw * 0.50;
+    var boundary = getColBoundary(row.page);
     return row.items.filter(function(i){ return i.x < boundary; });
   }
 
@@ -519,8 +491,12 @@ function parsePDFQuotation(allItems, pageWidths) {
     var fullText = items.map(function(i){ return i.text; }).join(' ').trim();
 
     // 내부 견적서 마커 검사 (좌측 아이템만 검사 — 2-up 레이아웃에서 우측 마커 영향 X)
-    // 좌측에 마커가 등장하면 그 페이지는 내부 견적서이므로 처리 중단
-    if (/예외\s*승인.*견적서|매장\s*환경\s*조사\s*Checklist/.test(fullText)) {
+    // "예외 승인으로 수정이 완료된 견적서 복사 및 재사용 금지" 공지 문구는 해당 행만 스킵
+    if (/예외\s*승인으로\s*수정이\s*완료된\s*견적서/.test(fullText)) {
+      return;
+    }
+    // 내부 가격 검증 시트(매장 환경 조사 Checklist)가 좌측에 등장하면 이후 처리 중단
+    if (/매장\s*환경\s*조사\s*Checklist/.test(fullText)) {
       stopProcessing = true;
       section = null;
       return;
@@ -632,145 +608,6 @@ function parsePDFQuotation(allItems, pageWidths) {
 }
 
 
-function detectAndProcess(wb) {
-  // 인쇄용시트(지원B) 우선
-  if (wb.SheetNames.indexOf('인쇄용시트(지원B)') >= 0) {
-    processDirectSheet(wb, '인쇄용시트(지원B)'); return;
-  }
-  // sheet1이 아마란스 포맷인지 확인
-  if (wb.SheetNames.indexOf('sheet1') >= 0) {
-    var ws = wb.Sheets['sheet1'];
-    var d = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
-    if (d[1] && d[1][0] === 'SO_FG') { processDirectSheet(wb, 'sheet1'); return; }
-  }
-  // 견적서 처리
-  processQuotation(wb);
-}
-
-// =====================================================
-// 직접 시트 (인쇄용시트 / 아마란스 업로드)
-// =====================================================
-function processDirectSheet(wb, sheetName) {
-  var ws = wb.Sheets[sheetName];
-  var data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
-  var rows = data.slice(3).filter(function(r){ return r && r[9]; });
-
-  if (rows.length === 0) {
-    document.getElementById('uploadStatus').textContent = '⚠️ 데이터 행이 없습니다.';
-    return;
-  }
-
-  // 메타데이터 자동 채우기
-  var r0 = rows[0];
-  if (r0[2]) document.getElementById('trCd').value = String(r0[2]);
-  if (r0[7]) {
-    var pln = String(r0[7]);
-    var plnSel = document.getElementById('plnCd');
-    for (var i=0;i<plnSel.options.length;i++) { if (plnSel.options[i].value === pln) { plnSel.value = pln; break; } }
-  }
-  if (r0[8]) {
-    var rmk = String(r0[8]);
-    var mRmk = rmk.match(/\[렌탈계약\]\/(.+?)\/[^\/]+$/);
-    document.getElementById('contractNo').value = mRmk ? mRmk[1] : rmk;
-    updateRemarkSuffix();
-  }
-  var toDate = function(v) { var s = String(Math.floor(Number(v)||0)); return s.length===8 ? s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8) : ''; };
-  if (r0[1]) document.getElementById('soDt').value = toDate(r0[1]);
-  if (r0[11]) { document.getElementById('shipDt').value = toDate(r0[11]); autoSetDueDate(); }
-  if (r0[10]) document.getElementById('dueDt').value = toDate(r0[10]);
-
-  directRows = rows;
-  showDirectPreview(rows, sheetName);
-}
-
-function showDirectPreview(rows, sheetName) {
-  var sec = document.getElementById('importSection');
-  var html = '<div class="import-box"><div class="import-box-head"><span>📋 '+sheetName+' — '+rows.length+'행 감지됨 (주문정보 자동 입력 완료)</span>'
-    +'<button class="btn btn-blue btn-sm" onclick="downloadDirect()">⬇ 바로 다운로드</button></div>'
-    +'<div style="overflow-x:auto;max-height:220px;overflow-y:auto;"><table class="itbl"><thead><tr>'
-    +'<th>품번</th><th>수량</th><th>단가(VAT)</th><th>공급가</th><th>MGMT</th></tr></thead><tbody>';
-  rows.slice(0,25).forEach(function(r) {
-    html += '<tr><td><span class="chip">'+esc(r[9])+'</span></td><td>'+r[12]+'</td><td>'+r[14]+'</td><td>'+r[15]+'</td><td><b>'+r[18]+'</b></td></tr>';
-  });
-  if (rows.length>25) html += '<tr><td colspan="5" style="text-align:center;color:#718096;">... 외 '+(rows.length-25)+'행</td></tr>';
-  html += '</tbody></table></div></div>';
-  sec.innerHTML = html;
-  sec.style.display = 'block';
-}
-
-function downloadDirect() {
-  if (!directRows || directRows.length === 0) return;
-  var trCd = document.getElementById('trCd').value.trim() || 'UPLOAD';
-  var d2d = directRows.map(function(r) {
-    return [r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13]||'',r[14]||0,r[15]||0,r[16]||0,r[17]||0,r[18]||''];
-  });
-  buildAndDownload(d2d, trCd);
-}
-
-// =====================================================
-// 견적서 파싱
-// =====================================================
-function processQuotation(wb) {
-  var ws = wb.Sheets[wb.SheetNames[0]];
-  var data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:false});
-
-  var items = parseQuotation(data);
-  if (items.length === 0) {
-    document.getElementById('uploadStatus').textContent = '⚠️ 견적서 품목을 찾지 못했습니다. 파일 확인 필요.';
-    return;
-  }
-
-  importData = items.map(function(p) {
-    var mr = matchName(p.name, p.note);
-    return Object.assign({}, p, { matchResult: mr, selectedKey: mr.matches[0] || null });
-  });
-  autoApplyImport();
-}
-
-function parseQuotation(data) {
-  var items = [], section = null;
-  var skip = ['월 이용료','합계','보증금','선납금','혜택금액','내용','품목','요 약','내  용'];
-  var stopProcessing = false;
-  for (var i=0; i<data.length; i++) {
-    var row = data[i];
-    if (!row) continue;
-    if (stopProcessing) continue;
-
-    // 내부 견적서(가격 검증용) 마커 감지 시 이후 모든 행 무시
-    var rowText = row.filter(function(c){ return c != null; }).map(function(c){ return String(c); }).join(' ');
-    if (/예외\s*승인.*견적서|매장\s*환경\s*조사\s*Checklist/.test(rowText)) {
-      stopProcessing = true;
-      section = null;
-      continue;
-    }
-
-    var c2 = row[2], c3 = row[3], c9 = row[9];
-    if (typeof c2 === 'string' && c2.trim()) {
-      var s = c2.trim();
-      if (s.indexOf('페이히어 셀러')>=0 || s.indexOf('1. 페이')>=0) section='seller';
-      else if (s.indexOf('페이히어 서비스')>=0 || s.indexOf('2. 페이')>=0) section='service';
-      // "부자재 및 ..." (내부 견적서 헤더)은 제외
-      else if ((s.indexOf('부자재')>=0 || s.indexOf('3. 부')>=0) && s.indexOf('부자재 및')<0) section='accessory';
-    }
-    if (!section || !c3 || typeof c3!=='string') continue;
-    var name = c3.trim();
-    if (!name) continue;
-    if (skip.indexOf(name)>=0) continue;
-    if (name[0]==='▶' || name[0]==='-' || name[0]==='·') continue;
-
-    if (section==='accessory') {
-      var qty = parseFloat(row[8])||0;
-      if (qty>0) items.push({name:name, qty:qty, price:0, note:c9?String(c9).trim():'', section:section});
-    } else {
-      var qty2 = parseFloat(row[7])||0;
-      var total = parseFloat(row[8])||0;
-      if (qty2>0) {
-        items.push({name:name, qty:qty2, price:total>100?total:0, note:'', section:section});
-      }
-    }
-  }
-  return items;
-}
 
 // 비고 조합: [렌탈계약]/(계약번호)/(담당자코드)
 function getRemarkDc(plnCdOverride) {
@@ -787,9 +624,10 @@ function updateRemarkSuffix() {
 }
 
 // 여러 매치에서 NICE/KOCES, 화이트/블랙 필터 적용
-function applyTypeFilters(matches) {
+// overrideColor: PDF 비고에서 감지한 색상 ("화이트"/"블랙"). 없으면 DOM 드롭다운 값 사용
+function applyTypeFilters(matches, overrideColor) {
   var terminalType = (document.getElementById('terminalType') || {}).value || '';
-  var mountColor   = (document.getElementById('mountColor')   || {}).value || '';
+  var mountColor   = overrideColor || '';
   var result = matches.slice();
 
   // NICE/KOCES 필터
@@ -813,6 +651,13 @@ function applyTypeFilters(matches) {
     }
   }
   return result;
+}
+
+// 품목명 + 비고에서 거치대 색상 감지 ("화이트 거치대" / "블랙 거치대")
+function detectMountColor(fullCtx) {
+  if (/화이트\s*거치대/.test(fullCtx)) return '화이트';
+  if (/블랙\s*거치대/.test(fullCtx))  return '블랙';
+  return '';
 }
 
 // 배터리형 / 유선형 명시되어 있으면 변형 키도 그에 맞게 필터
@@ -847,6 +692,8 @@ function matchName(name, note) {
 
   var combined = (note2 && note2[0] === '*') ? (baseName + note2) : baseName;
   var fullCtx = name + ' ' + note2;
+  // PDF 비고에서 거치대 색상 감지 — 드롭다운 없이도 자동 구분
+  var detectedColor = detectMountColor(fullCtx);
 
   // ③ combined이 PRODUCT_MAP에 없고 note2가 있을 때: * 변형 키를 노트 내용으로 퍼지 매칭
   //    PDF에서 비고가 부분적으로 읽히거나 앞에 * 없이 읽힌 경우를 처리
@@ -887,7 +734,7 @@ function matchName(name, note) {
     });
     if (variants.length > 0) {
       // 기본 키 + 변형 모두 합쳐서 필터 적용
-      var allOpts = uniq(applyTypeFilters(baseMatches.concat(variants)));
+      var allOpts = uniq(applyTypeFilters(baseMatches.concat(variants), detectedColor));
       allOpts = applyPowerFilter(allOpts, fullCtx);
       // ④ note2가 있으면 노트 내용에 가장 잘 맞는 * 변형을 matches[0]으로 정렬
       //    → autoApplyImport가 첫 번째 매핑을 자동 적용하므로 순서가 중요
@@ -913,7 +760,7 @@ function matchName(name, note) {
   }
 
   var sw = keys.filter(function(k){ return k.indexOf(baseName)===0 && k.length>baseName.length; });
-  sw = applyPowerFilter(applyTypeFilters(sw), fullCtx);
+  sw = applyPowerFilter(applyTypeFilters(sw, detectedColor), fullCtx);
   // 비고 없이 포함/미포함 변형만 있을 때: 미포함을 기본으로 (더 안전한 선택)
   if (sw.length > 1 && !note2) {
     sw.sort(function(a, b) {

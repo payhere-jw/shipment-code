@@ -432,6 +432,24 @@ function extractContractMonths(allItems) {
         var n4 = parseInt(m3[1]);
         if (n4 >= 6 && n4 <= 120) return n4;
       }
+      // 전략 1-c: "· 약정" + "36" + "개월 · 보증금" 패턴 (숫자가 별도 토큰, 개월은 다음 토큰에 접두어)
+      for (var k2 = i2 + 1; k2 < Math.min(i2 + 4, allItems.length); k2++) {
+        var numM2 = allItems[k2].text.match(/^(\d+)$/);
+        if (numM2) {
+          var numVal2 = parseInt(numM2[1]);
+          if (numVal2 >= 6 && numVal2 <= 120 && k2 + 1 < allItems.length && /^개월/.test(allItems[k2 + 1].text)) {
+            return numVal2;
+          }
+        }
+      }
+    }
+  }
+  // 전략 1-d: 토큰 내 "N개월" 포함 패턴 폴백 (예: "36개월 총액", "36개월 · 보증금")
+  for (var i4 = 0; i4 < allItems.length; i4++) {
+    var m4 = allItems[i4].text.match(/(\d+)\s*개월/);
+    if (m4) {
+      var n5 = parseInt(m4[1]);
+      if (n5 >= 6 && n5 <= 120) return n5;
     }
   }
   // 전략 2: "렌탈기간" · "계약기간" 근처 숫자 탐색 (같은 행 ±15pt, 또는 바로 다음 토큰)
@@ -602,7 +620,26 @@ function parsePDFQuotation(allItems, pageWidths) {
     // ── 신규 포맷 섹션 헤더 ──
     if (/계약\s*품목\s*상세/.test(fullText)) { section=null; return; } // 상위 헤더, 서브헤더 감지로 분기
     if (/포스.*카드.*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
-    if (/기타\s*무상/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; } // 영수증 용지 포함, quarterly receipt 적용
+    if (/기타\s*무상/.test(fullText)) {
+      section='seller'; pendingServiceName=null; pendingServiceData=null;
+      // 신규 PDF: "기타 무상"과 품목명이 같은 행에 있는 경우 즉시 추출
+      // row.items 전체를 합쳐서 "기타 무상" 이후 텍스트를 정규식으로 파싱
+      var allRowStr = row.items.map(function(i){ return i.text; }).join(' ');
+      var afterMu = allRowStr.replace(/^[\s\S]*?기타\s*무상\s*/, '').trim();
+      if (afterMu) {
+        // "정가" 또는 "₩" 이전까지가 품목명
+        var nm = afterMu.match(/^([\s\S]+?)(?:\s+정가\b|\s*₩|$)/);
+        var inlineName = nm ? nm[1].trim() : '';
+        if (inlineName && SKIP.indexOf(inlineName) < 0 && !HEADER_RE.test(inlineName)) {
+          var inlineQty = -1;
+          row.items.forEach(function(it){
+            if (/^\d+$/.test(it.text) && +it.text >= 1 && +it.text < 10000) inlineQty = +it.text;
+          });
+          if (inlineQty > 0) result.push({ name: inlineName, qty: inlineQty, price: 0, note: '', section: 'seller' });
+        }
+      }
+      return;
+    }
     if (/설치[·\s]*하드웨어/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; return; }
     if (/^프로모션$/.test(fullText)) { preSectionBeforePromo = section; section = 'promo'; return; } // 프로모션 경품 스킵, 이전 섹션 저장
     if (/▶\s*안내/.test(fullText) || /^-\s*요\s*약/.test(fullText) || /안내\s*사항/.test(fullText)) { section=null; return; }

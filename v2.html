@@ -752,54 +752,48 @@ function parsePDFQuotation(allItems, pageWidths) {
       return;
     }
 
-    // ── 부자재: [품목명...] [수량] [비고...] ──
+    // ── 부자재: 2열 카드 그리드 지원 (품목 많으면 카드 2개/행, 적으면 1개/행 단독) ──
     if (section === 'accessory') {
-      var qtyIdx2 = -1;
-      var qtySrc2 = items; // qty를 찾은 소스 (left items 또는 row.items)
-      items.forEach(function(item, idx){
-        if (qtyIdx2 < 0 && /^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdx2 = idx;
-      });
-
-      // 2페이지 이상: qty가 50% 경계 오른쪽에 배치된 경우 row.items 전체에서 재탐색
-      if (qtyIdx2 < 0) {
-        row.items.forEach(function(item, idx){
-          if (qtyIdx2 < 0 && /^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdx2 = idx;
-        });
-        if (qtyIdx2 >= 0) qtySrc2 = row.items;
-      }
-
-      if (qtyIdx2 < 0) return; // 수량 없는 행은 스킵
-
-      // 품목명: left items에서 "정가" 또는 첫 ₩ 이전까지
-      // nameEndIdx2를 items.length로 초기화해야 qty가 row.items에 있을 때도 올바르게 동작
-      var nameEndIdx2 = items.length;
-      items.forEach(function(item, idx){
-        if (idx < nameEndIdx2 && (item.text === '정가' || item.text.charAt(0) === '₩')) {
-          nameEndIdx2 = idx;
-        }
-      });
-
-      var name2 = items.slice(0, nameEndIdx2).map(function(i){ return i.text; }).join(' ').trim();
-      if (!name2 || SKIP.indexOf(name2) >= 0) return;
-      if (HEADER_RE.test(name2) || /^#N\/A/.test(name2)) return;
-
-      var qty2  = parseInt(qtySrc2[qtyIdx2].text);
-      var qtyX2 = qtySrc2[qtyIdx2].x;
       var pw2 = pageWidths[row.page] || 595;
-      var noteItems2 = row.items.filter(function(i){
-        return i.x > qtyX2 && i.x < pw2 * 0.70 && !/^₩/.test(i.text) && !/^\d+$/.test(i.text);
-      });
-      var note2 = noteItems2.map(function(i){ return i.text; }).join(' ').trim();
+      // 부자재 상세 카드 그리드는 페이지 정확히 절반(50%) 기준 2컬럼으로 배치됨.
+      // (상단 getColBoundary는 2-up 내부시트 분리용 동적 경계라 좌측 컬럼 항목을 과도하게
+      //  잘라낼 수 있어(예: 수량이 2자리인 경우) 이 섹션에서는 별도로 페이지폭 50%를 사용한다.)
+      var innerBoundary2 = pw2 * 0.5;
+      var leftCardItems  = row.items.filter(function(i){ return i.x < innerBoundary2; });
+      var rightCardItems = row.items.filter(function(i){ return i.x >= innerBoundary2; });
 
-      // 신규 포맷 거치대: 설치/전원/색상 속성이 qty 왼쪽에 있거나 별도 행에서 병합된 경우
-      // qty 기준 오른쪽 note에 없으면 row 전체 텍스트에서 직접 추출
-      if (/^[선후]불형\s*거치대$/.test(name2) && !/설치/.test(note2)) {
-        var allRowText2 = row.items.map(function(i){ return i.text; }).join(' ');
-        var mAttr = allRowText2.match(/설치\s*[:：]\s*\S+.*색상\s*[:：]\s*\S+/);
-        if (mAttr) note2 = mAttr[0].trim();
+      // 카드(품목명 + 수량 + 선택적 비고) 하나를 파싱.
+      // 품목명은 "정가"/₩ 앞까지, 수량은 카드 내 마지막 단독 숫자, 비고는 나머지 토큰
+      // (비고가 수량 앞/뒤 어디에 와도 모두 잡히도록 순서에 의존하지 않음)
+      function extractAccessoryCard(cardItems) {
+        if (!cardItems.length) return null;
+        var qIdx = -1;
+        cardItems.forEach(function(item, idx){
+          if (/^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qIdx = idx;
+        });
+        if (qIdx < 0) return null; // 수량 없는 카드는 스킵 (예: 합계/상당 표시줄)
+        var nEnd = qIdx;
+        for (var ci = 0; ci < qIdx; ci++) {
+          if (cardItems[ci].text === '정가' || cardItems[ci].text.charAt(0) === '₩') { nEnd = ci; break; }
+        }
+        var nm = cardItems.slice(0, nEnd).map(function(x){ return x.text; }).join(' ').trim();
+        if (!nm) return null;
+        var qn = parseInt(cardItems[qIdx].text, 10);
+        var noteToks = [];
+        cardItems.forEach(function(item, idx){
+          if (idx < nEnd || idx === qIdx) return;
+          if (item.text === '정가' || item.text.charAt(0) === '₩') return;
+          noteToks.push(item.text);
+        });
+        return { name: nm, qty: qn, note: noteToks.join(' ').trim() };
       }
 
-      result.push({ name:name2, qty:qty2, price:0, note:note2, section:'accessory' });
+      [extractAccessoryCard(leftCardItems), extractAccessoryCard(rightCardItems)].forEach(function(card){
+        if (!card) return;
+        if (SKIP.indexOf(card.name) >= 0) return;
+        if (HEADER_RE.test(card.name) || /^#N\/A/.test(card.name)) return;
+        result.push({ name:card.name, qty:card.qty, price:0, note:card.note, section:'accessory' });
+      });
     }
   });
 

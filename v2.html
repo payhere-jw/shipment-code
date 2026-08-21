@@ -1476,7 +1476,6 @@ function matchName(name, note) {
   if (suffix[0] === ' ' && /^[가-힣a-zA-Z]/.test(suffix.slice(1))) return false; // 멀티패드/서명패드 등 별개 하위 변형 제외
   return true;
   });
-  }
   if (sw.length===1) return {type:'exact', matches:sw};
   if (sw.length>1) return {type:'multiple', matches:sw};
 

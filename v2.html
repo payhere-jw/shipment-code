@@ -957,6 +957,7 @@ function parsePDFQuotation(allItems, pageWidths) {
   var pendingServiceName = null; // 신규 포맷: 서비스 이름행 저장 (다음 "월 요금 합계" 행에서 총액 합산)
   var pendingServiceData = null; // 신규 포맷: 서비스 데이터행 저장 {qty, price} (서브행 qty/price 우선)
   var pendingSellerData  = null; // 신규 포맷: 셀러 데이터행 저장 {qty, price} (다음 이름행에서 사용)
+  var pendingSellerName  = null; // 신규 포맷: 셀러 이름행 저장 (다음 데이터행에서 사용) — 이름이 먼저 오는 경우 대응
 
   // 페이지별 열 경계 동적 감지: x좌표 분포에서 가장 큰 gap을 찾아 좌/우 분리 기준으로 사용
   // 2-up 레이아웃에서 고객용 견적서(좌)와 내부 가격 검증 시트(우)가 명확히 분리됨
@@ -1012,9 +1013,25 @@ function parsePDFQuotation(allItems, pageWidths) {
           }
         });
         if (pdQty > 0) {
-          if (section === 'seller') pendingSellerData  = { qty: pdQty, price: pdPrice };
-          if (section === 'service') pendingServiceData = { qty: pdQty, price: pdPrice };
-        }
+  if (section === 'seller') {
+    if (pendingSellerName) {
+      result.push({ name:pendingSellerName, qty:pdQty, price:pdPrice > 100 ? pdPrice : 0, note:'', section:'seller' });
+      pendingSellerName = null;
+      pendingSellerData = null;
+    } else {
+      pendingSellerData = { qty: pdQty, price: pdPrice };
+    }
+  }
+  if (section === 'service') {
+    if (pendingServiceName) {
+      result.push({ name:pendingServiceName, qty:pdQty, price:pdPrice > 100 ? pdPrice : 0, note:'', section:'service' });
+      pendingServiceName = null;
+      pendingServiceData = null;
+    } else {
+      pendingServiceData = { qty: pdQty, price: pdPrice };
+    }
+  }
+}
       }
       return;
     }
@@ -1048,15 +1065,14 @@ function parsePDFQuotation(allItems, pageWidths) {
 
     // ── 섹션 헤더 감지 (숫자 접두사 1./2./3. 없어도 인식) ──
     // 단, "부자재 및 프로모션" 같은 내부 견적서 헤더는 제외
-    if (/^(\d+[\.\s]\s*)?페이히어\s*셀러/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
-    if (/^(\d+[\.\s]\s*)?카드\s*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
-    if (/^(\d+[\.\s]\s*)?페이히어\s*서비스/.test(fullText) || /페이히어\s*서비스/.test(fullText)) { section='service'; pendingSellerData=null; return; }
-    if (/^(\d+[\.\s]\s*)?부자재(?!\s*및)/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; pendingSellerData=null; return; }
+    if (/^(\d+[\.\s]\s*)?페이히어\s*셀러/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null; return; }
+    if (/^(\d+[\.\s]\s*)?페이히어\s*서비스/.test(fullText) || /페이히어\s*서비스/.test(fullText)) { section='service'; pendingSellerData=null; pendingSellerName=null; return; }
+    if (/^(\d+[\.\s]\s*)?부자재(?!\s*및)/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; pendingSellerData=null; pendingSellerName=null; return; }
     // ── 신규 포맷 섹션 헤더 ──
     if (/계약\s*품목\s*상세/.test(fullText)) { section=null; return; } // 상위 헤더, 서브헤더 감지로 분기
-    if (/포스.*카드.*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
+    if (/포스.*카드.*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null; return; }
     if (/기타\s*무상/.test(fullText)) {
-      section='seller'; pendingServiceName=null; pendingServiceData=null;
+        section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null;
       // 신규 PDF: "기타 무상"과 품목명이 같은 행에 있는 경우 즉시 추출
       // row.items 전체를 합쳐서 "기타 무상" 이후 텍스트를 정규식으로 파싱
       var allRowStr = row.items.map(function(i){ return i.text; }).join(' ');
@@ -1132,7 +1148,13 @@ function parsePDFQuotation(allItems, pageWidths) {
         }
         return;
       }
-      if (qtyIdx < 0) { pendingSellerData = null; return; }
+      if (qtyIdx < 0) {
+  var nameOnly = items.map(function(i){ return i.text; }).join(' ').trim();
+  if (nameOnly && SKIP.indexOf(nameOnly) < 0 && !HEADER_RE.test(nameOnly) && !FOOTER_RE.test(nameOnly) && !/^#N\/A/.test(nameOnly)) {
+    pendingSellerName = nameOnly;
+  }
+  return;
+}
       // 품목명: 좌측 컬럼에서 첫 ₩ 이전까지
       var firstPriceIdx = -1;
       items.forEach(function(item, idx){

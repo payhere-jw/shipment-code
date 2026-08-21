@@ -678,6 +678,48 @@ const PRODUCT_MAP = {
 
 
 // 관리구분 → MGMT_CD
+// PDF 폰트가 가격 숫자를 사설영역(PUA) 문자로 인코딩하는 경우 실제 숫자로 변환
+// (U+E071~U+E07A → '0'~'9', U+E093 → ',')
+function decodePUADigits(s) {
+  return s.replace(/[\uE071-\uE07A]/g, function(ch) {
+    return String.fromCharCode(ch.charCodeAt(0) - 0xE071 + 0x30);
+  }).replace(/\uE093/g, ',');
+}
+
+// PDF가 가격 숫자(₩ 뒤 자릿수)를 위조방지 목적으로 한 글자씩 별도 텍스트 아이템으로 렌더링하는 경우,
+// 같은 행에서 '₩' 뒤에 인접(gap<10pt)해서 오는 숫자/쉼표 글자들을 하나의 문자열로 합침
+function mergeCurrencyDigits(allItems) {
+  var sorted = allItems.slice().sort(function(a,b){
+    if (a.page !== b.page) return a.page - b.page;
+    if (Math.abs(a.y - b.y) > 4) return a.y - b.y;
+    return a.x - b.x;
+  });
+  var merged = [];
+  for (var i = 0; i < sorted.length; i++) {
+    var cur = sorted[i];
+    var curDec = decodePUADigits(cur.text);
+    if (curDec === '₩') {
+      var buf = '₩';
+      var j = i + 1;
+      var lastX = cur.x;
+      while (j < sorted.length &&
+             sorted[j].page === cur.page &&
+             Math.abs(sorted[j].y - cur.y) <= 4 &&
+             (sorted[j].x - lastX) < 10 &&
+             /^[\d,]$/.test(decodePUADigits(sorted[j].text))) {
+        buf += decodePUADigits(sorted[j].text);
+        lastX = sorted[j].x;
+        j++;
+      }
+      merged.push({ text: buf, x: cur.x, y: cur.y, page: cur.page });
+      i = j - 1;
+    } else {
+      merged.push({ text: curDec, x: cur.x, y: cur.y, page: cur.page });
+    }
+  }
+  return merged;
+}
+
 function getMgmtCd(mgmtType) {
   const map = { '렌탈':'03', 'A/S':'20', '인터넷 패키지':'09', '일시납 프로모션':'19', 'CX':'04' };
   return map[mgmtType] || '02';
@@ -782,6 +824,7 @@ async function readPDF(file) {
       textContent.items.forEach(function(item) {
         var t = item.str.trim();
         if (!t) return;
+        t = decodePUADigits(t);
         allItems.push({
           text: t,
           x: item.transform[4],
@@ -803,6 +846,7 @@ async function readPDF(file) {
       if (!isDupe) dedupedItems.push(item);
     });
     allItems = dedupedItems;
+    allItems = mergeCurrencyDigits(allItems);
 
     var contractMonths = extractContractMonths(allItems);
     var items = parsePDFQuotation(allItems, pageWidths);
@@ -957,7 +1001,6 @@ function parsePDFQuotation(allItems, pageWidths) {
   var pendingServiceName = null; // 신규 포맷: 서비스 이름행 저장 (다음 "월 요금 합계" 행에서 총액 합산)
   var pendingServiceData = null; // 신규 포맷: 서비스 데이터행 저장 {qty, price} (서브행 qty/price 우선)
   var pendingSellerData  = null; // 신규 포맷: 셀러 데이터행 저장 {qty, price} (다음 이름행에서 사용)
-  var pendingSellerName  = null; // 신규 포맷: 셀러 이름행 저장 (다음 데이터행에서 사용) — 이름이 먼저 오는 경우 대응
 
   // 페이지별 열 경계 동적 감지: x좌표 분포에서 가장 큰 gap을 찾아 좌/우 분리 기준으로 사용
   // 2-up 레이아웃에서 고객용 견적서(좌)와 내부 가격 검증 시트(우)가 명확히 분리됨
@@ -1013,25 +1056,9 @@ function parsePDFQuotation(allItems, pageWidths) {
           }
         });
         if (pdQty > 0) {
-  if (section === 'seller') {
-    if (pendingSellerName) {
-      result.push({ name:pendingSellerName, qty:pdQty, price:pdPrice > 100 ? pdPrice : 0, note:'', section:'seller' });
-      pendingSellerName = null;
-      pendingSellerData = null;
-    } else {
-      pendingSellerData = { qty: pdQty, price: pdPrice };
-    }
-  }
-  if (section === 'service') {
-    if (pendingServiceName) {
-      result.push({ name:pendingServiceName, qty:pdQty, price:pdPrice > 100 ? pdPrice : 0, note:'', section:'service' });
-      pendingServiceName = null;
-      pendingServiceData = null;
-    } else {
-      pendingServiceData = { qty: pdQty, price: pdPrice };
-    }
-  }
-}
+          if (section === 'seller') pendingSellerData  = { qty: pdQty, price: pdPrice };
+          if (section === 'service') pendingServiceData = { qty: pdQty, price: pdPrice };
+        }
       }
       return;
     }
@@ -1065,14 +1092,14 @@ function parsePDFQuotation(allItems, pageWidths) {
 
     // ── 섹션 헤더 감지 (숫자 접두사 1./2./3. 없어도 인식) ──
     // 단, "부자재 및 프로모션" 같은 내부 견적서 헤더는 제외
-    if (/^(\d+[\.\s]\s*)?페이히어\s*셀러/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null; return; }
-    if (/^(\d+[\.\s]\s*)?페이히어\s*서비스/.test(fullText) || /페이히어\s*서비스/.test(fullText)) { section='service'; pendingSellerData=null; pendingSellerName=null; return; }
-    if (/^(\d+[\.\s]\s*)?부자재(?!\s*및)/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; pendingSellerData=null; pendingSellerName=null; return; }
+    if (/^(\d+[\.\s]\s*)?페이히어\s*셀러/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
+    if (/^(\d+[\.\s]\s*)?페이히어\s*서비스/.test(fullText) || /페이히어\s*서비스/.test(fullText)) { section='service'; pendingSellerData=null; return; }
+    if (/^(\d+[\.\s]\s*)?부자재(?!\s*및)/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; pendingSellerData=null; return; }
     // ── 신규 포맷 섹션 헤더 ──
     if (/계약\s*품목\s*상세/.test(fullText)) { section=null; return; } // 상위 헤더, 서브헤더 감지로 분기
-    if (/포스.*카드.*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null; return; }
+    if (/포스.*카드.*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
     if (/기타\s*무상/.test(fullText)) {
-        section='seller'; pendingServiceName=null; pendingServiceData=null; pendingSellerName=null; pendingSellerData=null;
+      section='seller'; pendingServiceName=null; pendingServiceData=null;
       // 신규 PDF: "기타 무상"과 품목명이 같은 행에 있는 경우 즉시 추출
       // row.items 전체를 합쳐서 "기타 무상" 이후 텍스트를 정규식으로 파싱
       var allRowStr = row.items.map(function(i){ return i.text; }).join(' ');
@@ -1120,55 +1147,52 @@ function parsePDFQuotation(allItems, pageWidths) {
     if (NOTICE_RE.test(fullText)) return; // 안내문 (- 로 시작)
     if (/^#N\/A/.test(fullText)) return; // 빈 셀 placeholder
 
-    // ── 셀러: 마지막 ₩ = 개별 합계 컬럼 사용 ──
+    // ── 셀러: "카테고리라벨→데이터행→구체적품목명" 3단계 구조와
+    //         기존 "이름+수량+가격 한 행" 구조를 모두 지원 ──
     if (section === 'seller') {
       var qtyIdx = -1;
       items.forEach(function(item, idx){
         if (/^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdx = idx;
       });
-      // 신규 포맷: qty가 우측 컬럼에 있는 경우 row.items 전체에서 재탐색
+      var usedFallback = false;
       var sellerSrc = items;
       if (qtyIdx < 0) {
         row.items.forEach(function(item, idx){
           if (/^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdx = idx;
         });
-        sellerSrc = row.items;
+        if (qtyIdx >= 0) { usedFallback = true; sellerSrc = row.items; }
       }
-      // 신규 포맷: 이름행/데이터행 분리 → pendingSellerData 사용
-      if (qtyIdx < 0 && pendingSellerData) {
-        var firstPriceIdx0 = -1;
-        items.forEach(function(item, idx){
-          if (firstPriceIdx0 < 0 && item.text.charAt(0) === '₩') firstPriceIdx0 = idx;
-        });
-        var nameEnd0 = firstPriceIdx0 >= 0 ? firstPriceIdx0 : items.length;
-        var name0 = items.slice(0, nameEnd0).map(function(i){ return i.text; }).join(' ').trim();
-        if (name0 && SKIP.indexOf(name0) < 0 && !HEADER_RE.test(name0) && !/^#N\/A/.test(name0)) {
-          result.push({ name:name0, qty:pendingSellerData.qty, price:pendingSellerData.price > 100 ? pendingSellerData.price : 0, note:'', section:'seller' });
-          pendingSellerData = null;
-        }
-        return;
-      }
-      if (qtyIdx < 0) {
-  var nameOnly = items.map(function(i){ return i.text; }).join(' ').trim();
-  if (nameOnly && SKIP.indexOf(nameOnly) < 0 && !HEADER_RE.test(nameOnly) && !FOOTER_RE.test(nameOnly) && !/^#N\/A/.test(nameOnly)) {
-    pendingSellerName = nameOnly;
-  }
-  return;
-}
-      // 품목명: 좌측 컬럼에서 첫 ₩ 이전까지
+
       var firstPriceIdx = -1;
       items.forEach(function(item, idx){
         if (firstPriceIdx < 0 && item.text.charAt(0) === '₩') firstPriceIdx = idx;
       });
       var nameEnd = firstPriceIdx >= 0 ? firstPriceIdx : items.length;
-      var name = items.slice(0, nameEnd).map(function(i){ return i.text; }).join(' ').trim();
-      if (!name || SKIP.indexOf(name) >= 0) return;
-      if (HEADER_RE.test(name) || /^#N\/A/.test(name)) return;
-      var qty = parseInt(sellerSrc[qtyIdx].text);
-      // 가격: row 전체에서 마지막 ₩ = 합계 컬럼
+      var nameCandidate = items.slice(0, nameEnd).map(function(i){ return i.text; }).join(' ').trim();
+      var validName = nameCandidate && SKIP.indexOf(nameCandidate) < 0 && !HEADER_RE.test(nameCandidate) && !/^#N\/A/.test(nameCandidate);
+
+      if (qtyIdx < 0) {
+        // 순수 이름행 (카테고리 라벨 또는 구체적 품목명)
+        if (validName && pendingSellerData) {
+          result.push({ name:nameCandidate, qty:pendingSellerData.qty, price:pendingSellerData.price, note:'', section:'seller' });
+          pendingSellerData = null;
+        }
+        // pending 없으면 카테고리 라벨일 뿐이므로 무시 (다음에 데이터/구체명이 옴)
+        return;
+      }
+
       var wItems = row.items.filter(function(i){ return i.text.charAt(0) === '₩'; });
       var rowTotal = wItems.length > 0 ? (parseInt(wItems[wItems.length-1].text.replace(/[₩,]/g,''))||0) : 0;
-      result.push({ name:name, qty:qty, price:rowTotal > 100 ? rowTotal : 0, note:'', section:'seller' });
+      var qty = parseInt(sellerSrc[qtyIdx].text);
+      var priceVal = rowTotal > 100 ? rowTotal : 0;
+
+      if (usedFallback && !validName) {
+        // 컬럼 분리로 수량/가격이 우측으로 잘려나간 순수 데이터행 → 다음 구체명 행을 기다림
+        pendingSellerData = { qty: qty, price: priceVal };
+      } else if (validName) {
+        // 이름+수량+가격이 한 행에 모두 있는 (구 포맷) 경우 → 즉시 push
+        result.push({ name:nameCandidate, qty:qty, price:priceVal, note:'', section:'seller' });
+      }
       return;
     }
 
@@ -1195,33 +1219,56 @@ function parsePDFQuotation(allItems, pageWidths) {
         pendingServiceData = null;
         return;
       }
+      // ── 신규 3단계(라벨→데이터→구체명) 구조 지원 ──
       var qtyIdxS = -1;
       items.forEach(function(item, idx){
         if (/^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdxS = idx;
       });
+      var usedFallbackS = false;
+      var srcS = items;
       if (qtyIdxS < 0) {
-        // 신규 포맷: 이름만 있는 행 → 저장 후 "월 요금 합계" 행 대기
-        var candidateName = items.map(function(i){ return i.text; }).join(' ').trim();
-        if (isNewFormat && candidateName && SKIP.indexOf(candidateName) < 0 && !HEADER_RE.test(candidateName) && !FOOTER_RE.test(candidateName)) {
-          pendingServiceName = candidateName;
-        }
-        return;
+        row.items.forEach(function(item, idx){
+          if (/^\d+$/.test(item.text) && +item.text >= 1 && +item.text < 10000) qtyIdxS = idx;
+        });
+        if (qtyIdxS >= 0) { usedFallbackS = true; srcS = row.items; }
       }
       var firstPIdxS = -1;
       items.forEach(function(item, idx){
         if (firstPIdxS < 0 && item.text.charAt(0) === '₩') firstPIdxS = idx;
       });
-      var nameEndS = (firstPIdxS >= 0 && firstPIdxS < qtyIdxS) ? firstPIdxS : qtyIdxS;
-      var nameS = items.slice(0, nameEndS).map(function(i){ return i.text; }).join(' ').trim();
-      if (!nameS || SKIP.indexOf(nameS) >= 0) return;
-      var qtyS = parseInt(items[qtyIdxS].text);
-      var wS = items.filter(function(i){ return i.text.charAt(0) === '₩'; });
+      var nameEndS = firstPIdxS >= 0 ? firstPIdxS : items.length;
+      var nameCandS = items.slice(0, nameEndS).map(function(i){ return i.text; }).join(' ').trim();
+      var validNameS = nameCandS && SKIP.indexOf(nameCandS) < 0 && !HEADER_RE.test(nameCandS) && !FOOTER_RE.test(nameCandS);
+
+      if (qtyIdxS < 0) {
+        // 신규 포맷: 이름만 있는 행 → 저장 후 "월 요금 합계" 행 대기 (기존 기능 유지)
+        var candidateName = items.map(function(i){ return i.text; }).join(' ').trim();
+        if (isNewFormat && candidateName && SKIP.indexOf(candidateName) < 0 && !HEADER_RE.test(candidateName) && !FOOTER_RE.test(candidateName)) {
+          pendingServiceName = candidateName;
+        }
+        // 3단계 구조: pending 데이터가 있으면 이 이름행으로 소비
+        if (validNameS && pendingServiceData) {
+          result.push({ name:nameCandS, qty:pendingServiceData.qty, price:pendingServiceData.price, note:'', section:'service' });
+          pendingServiceData = null;
+          pendingServiceName = null; // 이미 이 이름으로 push했으므로 '월 요금 합계' 블록이 재사용하지 않도록 정리
+        }
+        return;
+      }
+
+      var wS = row.items.filter(function(i){ return i.text.charAt(0) === '₩'; });
       var rowTotalS = wS.length > 0 ? (parseInt(wS[wS.length-1].text.replace(/[₩,]/g,''))||0) : 0;
-      if (rowTotalS === 0) return;
+      var qtyS = parseInt(srcS[qtyIdxS].text);
       // 신규 포맷: 마지막 ₩ = 이미 약정 총액 → 그대로 사용
       // 구 포맷: 마지막 ₩ = 월 행합계 → 렌탈기간 곱함
       var totalPriceS = isNewFormat ? rowTotalS : rowTotalS * rentalMonths;
-      result.push({ name:nameS, qty:qtyS, price:totalPriceS, note:'', section:'service' });
+
+      if (usedFallbackS && !validNameS) {
+        // 컬럼 분리로 수량/가격이 우측으로 잘려나간 순수 데이터행 → 다음 구체명 행을 기다림
+        pendingServiceData = { qty: qtyS, price: totalPriceS };
+      } else if (validNameS) {
+        if (totalPriceS === 0) return;
+        result.push({ name:nameCandS, qty:qtyS, price:totalPriceS, note:'', section:'service' });
+      }
       return;
     }
 

@@ -260,6 +260,22 @@ const PRODUCT_MAP = {
     { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
     { "code": "SS0063", "name": "[SET] KDP-SC303F serial 멀티패드 + RJ9 to RJ11 케이블 KOCES", "qty": 1, "mgmtType": "영업 무상제공" }
   ],
+  "페이히어 터미널 맥스 멀티패드NICE": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "AA0013", "name": "NK-2500QN NC7000/NC8000용 애플페이 멀티패드 NICE", "qty": 1, "mgmtType": "영업 무상제공" }
+  ],
+  "페이히어 터미널 맥스 멀티패드KOCES": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "SS0063", "name": "[SET] KDP-SC303F serial 멀티패드 + RJ9 to RJ11 케이블 KOCES", "qty": 1, "mgmtType": "영업 무상제공" }
+  ],
+  "페이히어 터미널 맥스 서명패드NICE": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "AA0030", "name": "SP125 서명패드", "qty": 1, "mgmtType": "영업 무상제공" }
+  ],
+  "페이히어 터미널 맥스 서명패드KOCES": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "AA0030", "name": "SP125 서명패드", "qty": 1, "mgmtType": "영업 무상제공" }
+  ],
   "PC 포스기": [
     { "code": "SS0067", "name": "[SET] PC POS TS-201 화이트 8GB N97 (부자재포함)", "qty": 1, "mgmtType": "렌탈" },
     { "code": "AC0001", "name": "PCPOS용 듀얼모니터(9.7화이트)", "qty": 1, "mgmtType": "렌탈" }
@@ -1033,6 +1049,7 @@ function parsePDFQuotation(allItems, pageWidths) {
     // ── 섹션 헤더 감지 (숫자 접두사 1./2./3. 없어도 인식) ──
     // 단, "부자재 및 프로모션" 같은 내부 견적서 헤더는 제외
     if (/^(\d+[\.\s]\s*)?페이히어\s*셀러/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
+    if (/^(\d+[\.\s]\s*)?카드\s*단말기/.test(fullText)) { section='seller'; pendingServiceName=null; pendingServiceData=null; return; }
     if (/^(\d+[\.\s]\s*)?페이히어\s*서비스/.test(fullText) || /페이히어\s*서비스/.test(fullText)) { section='service'; pendingSellerData=null; return; }
     if (/^(\d+[\.\s]\s*)?부자재(?!\s*및)/.test(fullText)) { section='accessory'; pendingServiceName=null; pendingServiceData=null; pendingSellerData=null; return; }
     // ── 신규 포맷 섹션 헤더 ──
@@ -1340,6 +1357,16 @@ function uniq(arr) { return arr.filter(function(v,i){ return arr.indexOf(v)===i;
 
 function matchName(name, note) {
   var keys = Object.keys(PRODUCT_MAP);
+
+  // 카드 단말기 섹션 신규 포맷: "페이히어 터미널 맥스 | 서명패드" / "| 멀티패드"
+  var padM = name.trim().match(/^(.+?)\s*\|\s*(서명패드|멀티패드)\s*$/);
+  if (padM && padM[1].trim() === '페이히어 터미널 맥스') {
+    var padBaseKey = '페이히어 터미널 맥스 ' + padM[2]; // "...멀티패드" or "...서명패드"
+    var padCands = keys.filter(function(k){ return k.indexOf(padBaseKey) === 0; });
+    var padFiltered = applyTypeFilters(padCands, '');
+    if (padFiltered.length === 1) return { type:'exact', matches: padFiltered };
+    if (padFiltered.length > 1)  return { type:'multiple', matches: padFiltered };
+  }
   var note2 = note ? String(note).trim() : '';
   // 숫자 내 천단위 쉼표 제거 (예: "30,000mAh" → "30000mAh")
   name = name.replace(/(\d),(\d{3})/g, '$1$2');
@@ -1443,15 +1470,12 @@ function matchName(name, note) {
     return {type:'exact', matches:baseMatches};
   }
 
-  var sw = keys.filter(function(k){ return k.indexOf(baseName)===0 && k.length>baseName.length; });
-  sw = applyPowerFilter(applyTypeFilters(sw, detectedColor), fullCtx);
-  // 비고 없이 포함/미포함 변형만 있을 때: 미포함을 기본으로 (더 안전한 선택)
-  if (sw.length > 1 && !note2) {
-    sw.sort(function(a, b) {
-      var aIsMi = a.indexOf('미포함') >= 0 ? 0 : 1;
-      var bIsMi = b.indexOf('미포함') >= 0 ? 0 : 1;
-      return aIsMi - bIsMi;
-    });
+  var sw = keys.filter(function(k){
+  if (k.indexOf(baseName) !== 0 || k.length <= baseName.length) return false;
+  var suffix = k.slice(baseName.length);
+  if (suffix[0] === ' ' && /^[가-힣a-zA-Z]/.test(suffix.slice(1))) return false; // 멀티패드/서명패드 등 별개 하위 변형 제외
+  return true;
+  });
   }
   if (sw.length===1) return {type:'exact', matches:sw};
   if (sw.length>1) return {type:'multiple', matches:sw};

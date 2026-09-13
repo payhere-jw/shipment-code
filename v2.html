@@ -276,6 +276,22 @@ const PRODUCT_MAP = {
     { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
     { "code": "AA0030", "name": "SP125 서명패드", "qty": 1, "mgmtType": "영업 무상제공" }
   ],
+  "페이히어 터미널 맥스 토스 프론트(화이트)": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "SS0097", "name": "[SET] Toss Front 2_화이트 + 포스 연결 케이블 + 이용가이드", "qty": 1, "mgmtType": "" }
+  ],
+  "페이히어 터미널 맥스 토스 프론트(블랙)": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "SS0102", "name": "[SET] Toss Front 2_블랙 + 포스 연결 케이블 + 이용가이드", "qty": 1, "mgmtType": "" }
+  ],
+  "페이히어 터미널 맥스 네이버 커넥트(화이트)": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "SS0101", "name": "[SET] Npay 커넥트_화이트 + 이용가이드", "qty": 1, "mgmtType": "" }
+  ],
+  "페이히어 터미널 맥스 네이버 커넥트(블랙)": [
+    { "code": "SS0069", "name": "[SET] PAYHERE 100TM(부자재포함)", "qty": 1, "mgmtType": "렌탈" },
+    { "code": "SS0100", "name": "[SET] Npay 커넥트_블랙 + 이용가이드", "qty": 1, "mgmtType": "" }
+  ],
   "PC 포스기": [
     { "code": "SS0067", "name": "[SET] PC POS TS-201 화이트 8GB N97 (부자재포함)", "qty": 1, "mgmtType": "렌탈" },
     { "code": "AC0001", "name": "PCPOS용 듀얼모니터(9.7화이트)", "qty": 1, "mgmtType": "렌탈" }
@@ -1445,10 +1461,12 @@ function uniq(arr) { return arr.filter(function(v,i){ return arr.indexOf(v)===i;
 function matchName(name, note) {
   var keys = Object.keys(PRODUCT_MAP);
 
-  // 카드 단말기 섹션 신규 포맷: "페이히어 터미널 맥스 | 서명패드" / "| 멀티패드"
-  var padM = name.trim().match(/^(.+?)\s*\|\s*(서명패드|멀티패드)\s*$/);
+  // 카드 단말기 섹션 신규 포맷:
+  // "페이히어 터미널 맥스 | 서명패드" / "| 멀티패드" / "| 토스 프론트(화이트/블랙)" / "| 네이버 커넥트(화이트/블랙)"
+  var padM = name.trim().match(/^(.+?)\s*\|\s*(서명패드|멀티패드|토스\s*프론트\s*\(화이트\)|토스\s*프론트\s*\(블랙\)|네이버\s*커넥트\s*\(화이트\)|네이버\s*커넥트\s*\(블랙\))\s*$/);
   if (padM && padM[1].trim() === '페이히어 터미널 맥스') {
-    var padBaseKey = '페이히어 터미널 맥스 ' + padM[2]; // "...멀티패드" or "...서명패드"
+    var padSuffix = padM[2].replace(/\s+/g, ' ').trim(); // 내부 공백 정규화 (예: "토스  프론트(화이트)" → "토스 프론트(화이트)")
+    var padBaseKey = '페이히어 터미널 맥스 ' + padSuffix; // "...멀티패드" / "...서명패드" / "...토스 프론트(화이트)" 등
     var padCands = keys.filter(function(k){ return k.indexOf(padBaseKey) === 0; });
     var padFiltered = applyTypeFilters(padCands, '');
     if (padFiltered.length === 1) return { type:'exact', matches: padFiltered };
